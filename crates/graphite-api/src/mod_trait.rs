@@ -47,9 +47,8 @@ macro_rules! graphite_mod {
             });
 
             if let Some(instance) = MOD_INSTANCE.get() {
-                if let Ok(mut guard) = instance.lock() {
-                    guard.on_load(ctx);
-                }
+                let mut guard = instance.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                guard.on_load(ctx);
             }
         }
 
@@ -63,18 +62,16 @@ macro_rules! graphite_mod {
             let mut cmd = unsafe { $crate::commands::CommandQueue::from_raw_ptr(cmd_ptr) };
 
             if let Some(instance) = MOD_INSTANCE.get() {
-                if let Ok(mut guard) = instance.try_lock() {
-                    guard.on_tick(&world, &mut cmd, tick_id);
-                }
+                let mut guard = instance.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                guard.on_tick(&world, &mut cmd, tick_id);
             }
         }
 
         #[unsafe(no_mangle)]
         pub extern "C" fn graphite_mod_on_unload() {
             if let Some(instance) = MOD_INSTANCE.get() {
-                if let Ok(mut guard) = instance.lock() {
-                    guard.on_unload();
-                }
+                let mut guard = instance.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                guard.on_unload();
             }
             ::log::info!("[{}] unloaded", $name);
         }

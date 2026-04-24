@@ -54,57 +54,63 @@ impl TickLoop {
             .name("graphite-tick".into())
             .stack_size(16 * 1024 * 1024)
             .spawn(move || {
-                let mut loader = ModLoader::new(mods_dir.clone());
-                loader.scan_and_load();
-                mod_count.store(loader.mod_count() as u64, Ordering::Relaxed);
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let mut loader = ModLoader::new(mods_dir.clone());
+                    loader.scan_and_load();
+                    mod_count.store(loader.mod_count() as u64, Ordering::Relaxed);
 
-                if loader.mod_count() == 0 {
-                    log::warn!("[Graphite] mod directory is empty: {}", mods_dir.display());
-                } else {
-                    log::info!("[Graphite] loaded mods: {:?}", loader.mod_names());
-                }
-
-                let world_ptr = state.world_snapshot_ptr();
-                let cmd_ptr = state.command_queue_ptr_mut();
-                let mut last_tick = 0_u64;
-
-                while running.load(Ordering::Acquire) {
-                    let current_tick = {
-                        let (lock, cvar) = &*wakeup;
-                        let guard = lock.lock().expect("tick mutex poisoned");
-                        let guard = cvar
-                            .wait_while(guard, |tick| {
-                                *tick == last_tick && running.load(Ordering::Acquire)
-                            })
-                            .expect("tick condvar poisoned");
-                        *guard
-                    };
-
-                    if !running.load(Ordering::Acquire) {
-                        break;
-                    }
-                    last_tick = current_tick;
-
-                    if !state.snapshot_ready() {
-                        state.set_command_count(0);
-                        continue;
+                    if loader.mod_count() == 0 {
+                        log::warn!("[Graphite] mod directory is empty: {}", mods_dir.display());
+                    } else {
+                        log::info!("[Graphite] loaded mods: {:?}", loader.mod_names());
                     }
 
-                    while let Ok(changed_path) = reload_rx.try_recv() {
-                        match loader.reload(&changed_path) {
-                            Ok(()) => log::info!("[Graphite] hot reload: {}", changed_path.display()),
-                            Err(err) => log::error!("[Graphite] hot reload failed: {err}"),
+                    let world_ptr = state.world_snapshot_ptr();
+                    let cmd_ptr = state.command_queue_ptr_mut();
+                    let mut last_tick = 0_u64;
+
+                    while running.load(Ordering::Acquire) {
+                        let current_tick = {
+                            let (lock, cvar) = &*wakeup;
+                            let guard = lock.lock().expect("tick mutex poisoned");
+                            let guard = cvar
+                                .wait_while(guard, |tick| {
+                                    *tick == last_tick && running.load(Ordering::Acquire)
+                                })
+                                .expect("tick condvar poisoned");
+                            *guard
+                        };
+
+                        if !running.load(Ordering::Acquire) {
+                            break;
                         }
-                        mod_count.store(loader.mod_count() as u64, Ordering::Relaxed);
-                    }
+                        last_tick = current_tick;
 
-                    unsafe {
-                        loader.tick_all(world_ptr, cmd_ptr, current_tick);
-                    }
+                        if !state.snapshot_ready() {
+                            state.set_command_count(0);
+                            continue;
+                        }
 
-                    state.set_command_count(0);
-                    state.clear_snapshot_ready();
-                    tick_count.fetch_add(1, Ordering::Relaxed);
+                        while let Ok(changed_path) = reload_rx.try_recv() {
+                            match loader.reload(&changed_path) {
+                                Ok(()) => log::info!("[Graphite] hot reload: {}", changed_path.display()),
+                                Err(err) => log::error!("[Graphite] hot reload failed: {err}"),
+                            }
+                            mod_count.store(loader.mod_count() as u64, Ordering::Relaxed);
+                        }
+
+                        unsafe {
+                            loader.tick_all(world_ptr, cmd_ptr, current_tick);
+                        }
+
+                        state.set_command_count(0);
+                        state.clear_snapshot_ready();
+                        tick_count.fetch_add(1, Ordering::Relaxed);
+                    }
+                }));
+
+                if result.is_err() {
+                    log::error!("[Graphite] tick loop panicked and was aborted");
                 }
 
                 log::info!(
