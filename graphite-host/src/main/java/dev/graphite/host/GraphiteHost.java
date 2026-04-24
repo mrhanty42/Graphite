@@ -139,9 +139,6 @@ public class GraphiteHost {
         if (!(event.getLevel() instanceof ServerLevel level)) {
             return;
         }
-        if (!level.dimension().equals(ServerLevel.OVERWORLD)) {
-            return;
-        }
 
         tickCounter++;
         snapshotWriter.write(level, tickCounter);
@@ -154,9 +151,6 @@ public class GraphiteHost {
             return;
         }
         if (!(event.getLevel() instanceof ServerLevel level)) {
-            return;
-        }
-        if (!level.dimension().equals(ServerLevel.OVERWORLD)) {
             return;
         }
 
