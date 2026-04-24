@@ -117,7 +117,7 @@ impl<'a> WorldView<'a> {
         })
     }
 
-    pub fn get_block_state_id(&self, x: i32, y: i32, z: i32) -> Option<u16> {
+    pub fn get_block_state_id(&self, x: i32, y: i32, z: i32) -> Option<u32> {
         let chunk_x = x >> 4;
         let chunk_z = z >> 4;
         let section_y = y >> 4;
@@ -135,8 +135,8 @@ impl<'a> WorldView<'a> {
 
         let state_id = unsafe {
             self.snapshot_base
-                .add(block_data_offset + idx * 2)
-                .cast::<u16>()
+                .add(block_data_offset + idx * 4)
+                .cast::<u32>()
                 .read_unaligned()
         };
 

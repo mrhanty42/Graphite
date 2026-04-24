@@ -97,7 +97,7 @@ def verify(java_files: list[Path], rust_files: list[Path]) -> int:
         else:
             ok_count += 1
 
-    for name, expected in (("ENTITY_RECORD_SIZE", 48), ("CHUNK_SECTION_RECORD_SIZE", 8208)):
+    for name, expected in (("ENTITY_RECORD_SIZE", 48), ("CHUNK_SECTION_RECORD_SIZE", 16400)):
         rc = rust_consts.get(name)
         if rc is not None:
             if rc.value != expected:

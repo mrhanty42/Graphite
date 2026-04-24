@@ -15,7 +15,7 @@ import java.nio.ByteOrder;
 
 public class WorldSnapshotWriter {
     private static final int SNAPSHOT_LIMIT = SharedMemory.OFFSET_COMMAND_QUEUE;
-    private static final int PROTOCOL_VERSION = 1;
+    private static final int PROTOCOL_VERSION = 2;
     private static final int SNAP_ENTITY_COUNT = 0;
     private static final int SNAP_CHUNK_SEC_COUNT = 4;
     private static final int SNAP_TIMESTAMP_NS = 8;
@@ -26,7 +26,7 @@ public class WorldSnapshotWriter {
     private static final int SNAP_HEADER_SIZE = 32;
 
     private static final int ENTITY_RECORD_SIZE = 48;
-    private static final int CHUNK_SECTION_RECORD_SIZE = 8208;
+    private static final int CHUNK_SECTION_RECORD_SIZE = 16400;
     private static final int MAX_ENTITIES = 4096;
     private static final int MAX_CHUNK_SECTIONS = 8;
 
@@ -176,7 +176,7 @@ public class WorldSnapshotWriter {
                         for (int lx = 0; lx < 16; lx++) {
                             int idx = (ly << 8) | (lz << 4) | lx;
                             int rawId = Block.getId(section.getBlockState(lx, ly, lz));
-                            stateBuffer.putShort(blockDataOff + idx * 2, (short) rawId);
+                            stateBuffer.putInt(blockDataOff + idx * 4, rawId);
                         }
                     }
                 }

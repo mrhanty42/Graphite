@@ -10,9 +10,9 @@ public final class SharedMemory {
     public static final int OFFSET_SNAPSHOT_READY = 0x0008;
     public static final int OFFSET_COMMAND_COUNT = 0x000C;
     public static final int OFFSET_WORLD_SNAPSHOT = 0x0040;
-    public static final int OFFSET_COMMAND_QUEUE = 0x8000;
-    public static final int OFFSET_EVENT_RING = 0xC000;
-    public static final int TOTAL_SIZE = 0x10000;
+    public static final int OFFSET_COMMAND_QUEUE = 0x30000;
+    public static final int OFFSET_EVENT_RING = 0x38000;
+    public static final int TOTAL_SIZE = 0x40000;
 
     private static final VarHandle INT_HANDLE = MethodHandles.byteBufferViewVarHandle(
         int[].class,
