@@ -20,6 +20,7 @@ pub struct LoadedMod {
 impl LoadedMod {
     fn load(path: &Path, mods_dir: &Path, load_gen: u64) -> Result<Self, String> {
         let ext = std::env::consts::DLL_EXTENSION;
+        cleanup_stale_temp_copies(path)?;
         let temp_name = format!(
             "{}_v{}.{}",
             path.file_stem()
@@ -210,4 +211,40 @@ fn has_dynlib_extension(path: &Path) -> bool {
         .and_then(|ext| ext.to_str())
         .map(|ext| ext.eq_ignore_ascii_case(std::env::consts::DLL_EXTENSION))
         .unwrap_or(false)
+}
+
+fn cleanup_stale_temp_copies(path: &Path) -> Result<(), String> {
+    let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
+        return Ok(());
+    };
+
+    let temp_root = std::env::temp_dir().join("graphite_mods");
+    if !temp_root.exists() {
+        return Ok(());
+    }
+
+    let prefix = format!("{stem}_v");
+    let expected_ext = std::env::consts::DLL_EXTENSION;
+    let entries = std::fs::read_dir(&temp_root)
+        .map_err(|err| format!("failed to inspect temp mod dir {}: {err}", temp_root.display()))?;
+
+    for entry in entries.flatten() {
+        let temp_path = entry.path();
+        let matches_prefix = temp_path
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .map(|value| value.starts_with(&prefix))
+            .unwrap_or(false);
+        let matches_ext = temp_path
+            .extension()
+            .and_then(|value| value.to_str())
+            .map(|value| value.eq_ignore_ascii_case(expected_ext))
+            .unwrap_or(false);
+
+        if matches_prefix && matches_ext {
+            let _ = std::fs::remove_file(&temp_path);
+        }
+    }
+
+    Ok(())
 }
