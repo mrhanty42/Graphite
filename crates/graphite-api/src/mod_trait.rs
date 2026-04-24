@@ -41,14 +41,21 @@ macro_rules! graphite_mod {
         pub extern "C" fn graphite_mod_on_load(
             ctx: *const $crate::mod_trait::ModLoadContext,
         ) {
-            MOD_INSTANCE.get_or_init(|| {
-                let instance = <$ty as $crate::mod_trait::GraphiteModImpl>::new();
-                ::std::sync::Mutex::new(instance)
-            });
+            let result = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| {
+                MOD_INSTANCE.get_or_init(|| {
+                    let instance = <$ty as $crate::mod_trait::GraphiteModImpl>::new();
+                    ::std::sync::Mutex::new(instance)
+                });
 
-            if let Some(instance) = MOD_INSTANCE.get() {
-                let mut guard = instance.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-                guard.on_load(ctx);
+                if let Some(instance) = MOD_INSTANCE.get() {
+                    let mut guard =
+                        instance.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                    guard.on_load(ctx);
+                }
+            }));
+
+            if result.is_err() {
+                ::log::error!("[{}] panic in graphite_mod_on_load", $name);
             }
         }
 
@@ -58,20 +65,34 @@ macro_rules! graphite_mod {
             cmd_ptr: *mut u8,
             tick_id: u64,
         ) {
-            let world = unsafe { $crate::world::WorldView::from_raw(world_ptr) };
-            let mut cmd = unsafe { $crate::commands::CommandQueue::from_raw_ptr(cmd_ptr) };
+            let result = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| {
+                let world = unsafe { $crate::world::WorldView::from_raw(world_ptr) };
+                let mut cmd = unsafe { $crate::commands::CommandQueue::from_raw_ptr(cmd_ptr) };
 
-            if let Some(instance) = MOD_INSTANCE.get() {
-                let mut guard = instance.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-                guard.on_tick(&world, &mut cmd, tick_id);
+                if let Some(instance) = MOD_INSTANCE.get() {
+                    let mut guard =
+                        instance.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                    guard.on_tick(&world, &mut cmd, tick_id);
+                }
+            }));
+
+            if result.is_err() {
+                ::log::error!("[{}] panic in graphite_mod_on_tick at tick {}", $name, tick_id);
             }
         }
 
         #[unsafe(no_mangle)]
         pub extern "C" fn graphite_mod_on_unload() {
-            if let Some(instance) = MOD_INSTANCE.get() {
-                let mut guard = instance.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-                guard.on_unload();
+            let result = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| {
+                if let Some(instance) = MOD_INSTANCE.get() {
+                    let mut guard =
+                        instance.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                    guard.on_unload();
+                }
+            }));
+
+            if result.is_err() {
+                ::log::error!("[{}] panic in graphite_mod_on_unload", $name);
             }
             ::log::info!("[{}] unloaded", $name);
         }

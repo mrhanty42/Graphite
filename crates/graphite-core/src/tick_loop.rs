@@ -99,8 +99,15 @@ impl TickLoop {
                             mod_count.store(loader.mod_count() as u64, Ordering::Relaxed);
                         }
 
-                        unsafe {
-                            loader.tick_all(world_ptr, cmd_ptr, current_tick);
+                        let tick_result =
+                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
+                                loader.tick_all(world_ptr, cmd_ptr, current_tick);
+                            }));
+                        if tick_result.is_err() {
+                            log::error!(
+                                "[Graphite] mod dispatch panicked at tick {}",
+                                current_tick
+                            );
                         }
 
                         state.set_command_count(0);

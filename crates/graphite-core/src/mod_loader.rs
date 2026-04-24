@@ -13,6 +13,7 @@ pub struct LoadedMod {
     pub version: String,
     path: PathBuf,
     temp_path: PathBuf,
+    mods_dir_cstr: CString,
     library: Library,
     on_tick_fn: FnOnTick,
 }
@@ -83,6 +84,7 @@ impl LoadedMod {
             version,
             path: path.to_path_buf(),
             temp_path,
+            mods_dir_cstr,
             library,
             on_tick_fn,
         })
@@ -104,6 +106,7 @@ impl LoadedMod {
 
 impl Drop for LoadedMod {
     fn drop(&mut self) {
+        let _ = self.mods_dir_cstr.as_c_str();
         let _ = std::fs::remove_file(&self.temp_path);
         log::info!("[Graphite] unloaded mod '{}'", self.name);
     }
