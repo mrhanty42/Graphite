@@ -1,0 +1,37 @@
+# Rust
+/crates/target/
+**/*.pdb
+**/*.d
+**/*.dll.exp
+**/*.dll.lib
+
+# Gradle / NeoForge
+/.gradle/
+/graphite-host/.gradle/
+/graphite-host/build/
+/graphite-host/run/
+/graphite-host/runs/
+/graphite-host/out/
+
+# Logs and OS noise
+*.log
+*.tmp
+*.lck
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# Generated native artifacts copied into resources for local dev
+/graphite-host/src/main/resources/natives/windows/*.dll
+/graphite-host/src/main/resources/natives/linux/*.so
+/graphite-host/src/main/resources/natives/macos/*.dylib
+/graphite-host/src/main/resources/natives/macos-arm64/*.dylib
+
+# Local test mods copied into run directories
+/graphite-host/**/graphite_mods/*.dll
+/graphite-host/**/graphite_mods/*.so
+/graphite-host/**/graphite_mods/*.dylib

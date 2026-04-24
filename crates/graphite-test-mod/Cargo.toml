@@ -1,0 +1,11 @@
+[package]
+name = "graphite-test-mod"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+graphite-api = { path = "../graphite-api" }
+log = "0.4"

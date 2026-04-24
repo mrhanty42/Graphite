@@ -1,0 +1,115 @@
+plugins {
+    id 'java'
+    id 'net.neoforged.gradle.userdev' version '7.0.145'
+}
+
+group = mod_group
+version = "${minecraft_version}-${mod_version}"
+
+java {
+    toolchain.languageVersion = JavaLanguageVersion.of(21)
+    withSourcesJar()
+}
+
+minecraft {
+    accessTransformers.file rootProject.file('src/main/resources/META-INF/accesstransformer.cfg')
+}
+
+runs {
+    configureEach {
+        systemProperty 'forge.logging.markers', 'REGISTRIES'
+        systemProperty 'forge.logging.console.level', 'debug'
+        systemProperty 'graphite.natives.dev_path', rootProject.file('../crates/target/release').absolutePath
+        systemProperty 'graphite.debug', 'true'
+    }
+
+    client {
+        client()
+        workingDirectory project.file('runs/client')
+    }
+
+    server {
+        server()
+        workingDirectory project.file('runs/server')
+    }
+}
+
+dependencies {
+    implementation "net.neoforged:neoforge:${neoforge_version}"
+    constraints {
+        implementation('org.ow2.asm:asm:9.7')
+        implementation('org.ow2.asm:asm-analysis:9.7')
+        implementation('org.ow2.asm:asm-commons:9.7')
+        implementation('org.ow2.asm:asm-tree:9.7')
+        implementation('org.ow2.asm:asm-util:9.7')
+    }
+}
+
+tasks.register('copyNatives', Copy) {
+    def os = org.gradle.internal.os.OperatingSystem.current()
+    def libName = os.isWindows() ? 'graphite_core.dll'
+        : os.isMacOsX() ? 'libgraphite_core.dylib'
+        : 'libgraphite_core.so'
+
+    from "../crates/target/release/"
+    into "src/main/resources/natives/${os.isWindows() ? 'windows' : os.isMacOsX() ? 'macos' : 'linux'}/"
+    include libName
+}
+
+tasks.register('copyTestMod', Copy) {
+    def os = org.gradle.internal.os.OperatingSystem.current()
+    def libName = os.isWindows() ? 'graphite_test_mod.dll'
+        : os.isMacOsX() ? 'libgraphite_test_mod.dylib'
+        : 'libgraphite_test_mod.so'
+
+    from "../crates/target/release/"
+    into "runs/client/graphite_mods"
+    include libName
+
+    doFirst {
+        mkdir "runs/client/graphite_mods"
+    }
+}
+
+tasks.register('prepareRun') {
+    dependsOn 'build', 'copyTestMod'
+    description = 'Builds Graphite host and copies native/test mod artifacts into the dev run directory.'
+}
+
+processResources {
+    var replaceProperties = [
+        minecraft_version: minecraft_version,
+        neoforge_version : neoforge_version,
+        mod_id           : mod_id,
+        mod_version      : mod_version,
+    ]
+    inputs.properties replaceProperties
+    filesMatching('META-INF/neoforge.mods.toml') {
+        expand replaceProperties
+    }
+}
+
+tasks.named('processResources').configure {
+    dependsOn tasks.named('copyNatives')
+}
+
+tasks.named('sourcesJar').configure {
+    dependsOn tasks.named('copyNatives')
+}
+
+tasks.matching { it.name == 'writeMinecraftClasspathClient' }.configureEach {
+    doLast {
+        def classpathFile = file(output.get().asFile)
+        if (!classpathFile.exists()) {
+            return
+        }
+
+        def filtered = classpathFile.readLines().findAll { line ->
+            !(line.contains('\\org.ow2.asm\\asm\\9.5\\')
+                || line.contains('\\org.ow2.asm\\asm-analysis\\9.5\\')
+                || line.contains('\\org.ow2.asm\\asm-tree\\9.5\\')
+                || line.contains('\\org.ow2.asm\\asm-util\\9.5\\'))
+        }
+        classpathFile.text = filtered.join(System.lineSeparator()) + System.lineSeparator()
+    }
+}

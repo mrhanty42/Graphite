@@ -1,0 +1,24 @@
+[workspace]
+resolver = "2"
+members = [
+    "graphite-core",
+    "graphite-api",
+    "graphite-test-mod",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["HanTY"]
+license = "MIT"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
+
+[profile.dev]
+opt-level = 1
+debug = true
