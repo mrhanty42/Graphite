@@ -47,7 +47,7 @@ public class CommandQueueReader {
         while (head != tail && processed < MAX_COMMANDS_PER_TICK) {
             byte cmdType = readQueueByte(dataBase, head);
             int payloadLen = readQueueByte(dataBase, head + 1) & 0xFF;
-            int payloadOff = (head + 2) % CQ_CAPACITY;
+            int payloadOff = head + 2;
             int totalSize = 2 + payloadLen;
 
             try {
@@ -56,7 +56,7 @@ public class CommandQueueReader {
                 LOG.error(String.format("[Graphite] Command 0x%02X failed", cmdType), e);
             }
 
-            head = (head + totalSize) % CQ_CAPACITY;
+            head += totalSize;
             processed++;
         }
 
