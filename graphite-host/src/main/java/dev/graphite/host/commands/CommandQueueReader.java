@@ -2,6 +2,7 @@ package dev.graphite.host.commands;
 
 import dev.graphite.host.SharedMemory;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.particles.ParticleOptions;
 import net.minecraft.core.particles.ParticleTypes;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.protocol.game.ClientboundSetEntityMotionPacket;
@@ -163,11 +164,12 @@ public class CommandQueueReader {
             return;
         }
 
+        int particleId = readQueueI32(base, off);
         double x = readQueueF64(base, off + 4);
         double y = readQueueF64(base, off + 12);
         double z = readQueueF64(base, off + 20);
         float count = readQueueF32(base, off + 28);
-        level.sendParticles(ParticleTypes.FLAME, x, y, z, (int) count, 0.1, 0.1, 0.1, 0.01);
+        level.sendParticles(resolveParticle(particleId), x, y, z, (int) count, 0.1, 0.1, 0.1, 0.01);
     }
 
     private byte readQueueByte(int dataBase, int relativeOff) {
@@ -196,5 +198,16 @@ public class CommandQueueReader {
             bytes[i] = readQueueByte(dataBase, relativeOff + i);
         }
         return ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).getDouble();
+    }
+
+    private ParticleOptions resolveParticle(int particleId) {
+        return switch (particleId) {
+            case 1 -> ParticleTypes.HEART;
+            case 2 -> ParticleTypes.CRIT;
+            case 3 -> ParticleTypes.END_ROD;
+            case 4 -> ParticleTypes.ENCHANT;
+            case 5 -> ParticleTypes.SMOKE;
+            default -> ParticleTypes.FLAME;
+        };
     }
 }
