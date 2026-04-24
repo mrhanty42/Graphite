@@ -59,6 +59,14 @@ public final class SharedMemory {
         LONG_HANDLE.setRelease(buffer, offset, value);
     }
 
+    public static int getIntVolatile(ByteBuffer buffer, int offset) {
+        return (int) INT_HANDLE.getVolatile(buffer, offset);
+    }
+
+    public static long getLongVolatile(ByteBuffer buffer, int offset) {
+        return (long) LONG_HANDLE.getVolatile(buffer, offset);
+    }
+
     public long getStateAddress() {
         return stateAddress;
     }

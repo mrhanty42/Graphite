@@ -140,6 +140,14 @@ public class GraphiteHost {
             return;
         }
 
+        if (SharedMemory.getIntVolatile(sharedMem.getStateBuffer(), SharedMemory.OFFSET_SNAPSHOT_READY) != 0) {
+            if (DEBUG_LOGGING) {
+                long previousTick = SharedMemory.getLongVolatile(sharedMem.getStateBuffer(), SharedMemory.OFFSET_TICK_COUNTER);
+                LOG.debug("[Graphite] Skipping snapshot write because Rust is still processing tick {}", previousTick);
+            }
+            return;
+        }
+
         tickCounter++;
         snapshotWriter.write(level, tickCounter);
         NativeBridge.graphiteTick(tickCounter);
