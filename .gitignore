@@ -24,6 +24,8 @@ Thumbs.db
 .idea/
 .vscode/
 *.iml
+/graphite-host/.eclipse/
+/graphite-host/bin/
 
 # Generated native artifacts copied into resources for local dev
 /graphite-host/src/main/resources/natives/windows/*.dll
