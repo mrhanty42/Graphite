@@ -17,6 +17,9 @@
 *.log
 *.tmp
 *.lck
+*.txt
+crates/gradle_log.txt
+crates/cargo_check_result.txt
 .DS_Store
 Thumbs.db
 

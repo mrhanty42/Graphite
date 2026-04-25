@@ -1,9 +1,8 @@
 use crate::protocol::*;
-use bytemuck::{Pod, Zeroable};
 use std::marker::PhantomData;
 
 #[repr(C, packed)]
-#[derive(Copy, Clone, Pod, Zeroable)]
+#[derive(Copy, Clone)]
 pub struct EntityRecord {
     pub entity_id: i32,
     pub kind: u16,
@@ -17,7 +16,7 @@ pub struct EntityRecord {
     pub health: f32,
 }
 
-const _: [(); ENTITY_RECORD_SIZE] = [(); std::mem::size_of::<EntityRecord>()];
+const _: () = assert!(std::mem::size_of::<EntityRecord>() == ENTITY_RECORD_SIZE);
 
 impl EntityRecord {
     pub fn entity_id(&self) -> i32 {
@@ -44,13 +43,25 @@ impl EntityRecord {
         unsafe { std::ptr::addr_of!(self.z).read_unaligned() }
     }
 
+    pub fn vx(&self) -> f32 {
+        unsafe { std::ptr::addr_of!(self.vx).read_unaligned() }
+    }
+
+    pub fn vy(&self) -> f32 {
+        unsafe { std::ptr::addr_of!(self.vy).read_unaligned() }
+    }
+
+    pub fn vz(&self) -> f32 {
+        unsafe { std::ptr::addr_of!(self.vz).read_unaligned() }
+    }
+
     pub fn health(&self) -> f32 {
         unsafe { std::ptr::addr_of!(self.health).read_unaligned() }
     }
 }
 
 #[repr(C, packed)]
-#[derive(Copy, Clone, Pod, Zeroable)]
+#[derive(Copy, Clone)]
 pub struct ChunkSectionHeader {
     pub chunk_x: i32,
     pub section_y: i32,
@@ -58,7 +69,25 @@ pub struct ChunkSectionHeader {
     pub flags: u32,
 }
 
-const _: [(); 16] = [(); std::mem::size_of::<ChunkSectionHeader>()];
+impl ChunkSectionHeader {
+    pub fn chunk_x(&self) -> i32 {
+        unsafe { std::ptr::addr_of!(self.chunk_x).read_unaligned() }
+    }
+
+    pub fn section_y(&self) -> i32 {
+        unsafe { std::ptr::addr_of!(self.section_y).read_unaligned() }
+    }
+
+    pub fn chunk_z(&self) -> i32 {
+        unsafe { std::ptr::addr_of!(self.chunk_z).read_unaligned() }
+    }
+
+    pub fn flags(&self) -> u32 {
+        unsafe { std::ptr::addr_of!(self.flags).read_unaligned() }
+    }
+}
+
+const _: () = assert!(std::mem::size_of::<ChunkSectionHeader>() == 16);
 
 pub struct WorldView<'a> {
     snapshot_base: *const u8,
@@ -76,10 +105,20 @@ impl<'a> WorldView<'a> {
             unsafe { base.add(SNAP_CHUNK_SECTION_COUNT).cast::<u32>().read_unaligned() };
         let version = unsafe { base.add(SNAP_VERSION).cast::<u32>().read_unaligned() };
 
-        assert_eq!(
-            version, PROTOCOL_VERSION,
-            "Protocol version mismatch: Java={version}, Rust={PROTOCOL_VERSION}"
-        );
+        if version != PROTOCOL_VERSION {
+            log::error!(
+                "[Graphite] Snapshot version mismatch: got {}, expected {} — skipping tick",
+                version,
+                PROTOCOL_VERSION
+            );
+            // Return an empty view instead of panicking
+            return Self {
+                snapshot_base: base,
+                entity_count: 0,
+                chunk_count: 0,
+                _lifetime: PhantomData,
+            };
+        }
 
         Self {
             snapshot_base: base,
@@ -99,19 +138,21 @@ impl<'a> WorldView<'a> {
         self.chunk_count as usize
     }
 
-    pub fn entities(&self) -> &[EntityRecord] {
-        let ptr = unsafe { self.snapshot_base.add(SNAP_HEADER_SIZE) as *const EntityRecord };
-        unsafe { std::slice::from_raw_parts(ptr, self.entity_count()) }
+    pub fn entities(&self) -> impl Iterator<Item = EntityRecord> + '_ {
+        let base = self.snapshot_base;
+        (0..self.entity_count()).map(move |index| unsafe {
+            let off = SNAP_HEADER_SIZE + index * ENTITY_RECORD_SIZE;
+            base.add(off).cast::<EntityRecord>().read_unaligned()
+        })
     }
 
-    pub fn players(&self) -> impl Iterator<Item = &EntityRecord> {
+    pub fn players(&self) -> impl Iterator<Item = EntityRecord> + '_ {
         self.entities()
-            .iter()
             .filter(|entity| entity.kind() == ENTITY_KIND_PLAYER)
     }
 
-    pub fn living_entities(&self) -> impl Iterator<Item = &EntityRecord> {
-        self.entities().iter().filter(|entity| {
+    pub fn living_entities(&self) -> impl Iterator<Item = EntityRecord> + '_ {
+        self.entities().filter(|entity| {
             entity.flags() & ENTITY_FLAG_ALIVE != 0
                 && matches!(entity.kind(), ENTITY_KIND_PLAYER | ENTITY_KIND_MOB)
         })
@@ -163,7 +204,7 @@ impl<'a> WorldView<'a> {
                     .cast::<ChunkSectionHeader>()
                     .read_unaligned()
             };
-            if header.chunk_x == cx && header.section_y == sy && header.chunk_z == cz {
+            if header.chunk_x() == cx && header.section_y() == sy && header.chunk_z() == cz {
                 return Some(index);
             }
         }

@@ -76,6 +76,14 @@ tasks.register('prepareRun') {
     description = 'Builds Graphite host and copies native/test mod artifacts into the dev run directory.'
 }
 
+tasks.matching { it.name == 'runClient' }.configureEach {
+    dependsOn 'prepareRun'
+}
+
+tasks.matching { it.name == 'runServer' }.configureEach {
+    dependsOn 'prepareRun'
+}
+
 processResources {
     var replaceProperties = [
         minecraft_version: minecraft_version,

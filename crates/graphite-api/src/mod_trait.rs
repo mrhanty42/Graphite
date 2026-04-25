@@ -27,17 +27,17 @@ macro_rules! graphite_mod {
         static MOD_INSTANCE: ::std::sync::OnceLock<::std::sync::Mutex<$ty>> =
             ::std::sync::OnceLock::new();
 
-        #[unsafe(no_mangle)]
+        #[no_mangle]
         pub extern "C" fn graphite_mod_name() -> *const ::std::ffi::c_char {
             concat!($name, "\0").as_ptr() as *const ::std::ffi::c_char
         }
 
-        #[unsafe(no_mangle)]
+        #[no_mangle]
         pub extern "C" fn graphite_mod_version() -> *const ::std::ffi::c_char {
             concat!($ver, "\0").as_ptr() as *const ::std::ffi::c_char
         }
 
-        #[unsafe(no_mangle)]
+        #[no_mangle]
         pub extern "C" fn graphite_mod_on_load(
             ctx: *const $crate::mod_trait::ModLoadContext,
         ) {
@@ -59,7 +59,7 @@ macro_rules! graphite_mod {
             }
         }
 
-        #[unsafe(no_mangle)]
+        #[no_mangle]
         pub unsafe extern "C" fn graphite_mod_on_tick(
             world_ptr: *const u8,
             cmd_ptr: *mut u8,
@@ -81,7 +81,7 @@ macro_rules! graphite_mod {
             }
         }
 
-        #[unsafe(no_mangle)]
+        #[no_mangle]
         pub extern "C" fn graphite_mod_on_unload() {
             let result = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| {
                 if let Some(instance) = MOD_INSTANCE.get() {

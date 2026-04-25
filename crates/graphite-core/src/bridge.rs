@@ -2,11 +2,11 @@ use crate::{shared_mem::SharedRegion, tick_loop::TickLoop};
 use jni::objects::{JByteBuffer, JClass, JString};
 use jni::sys::{jboolean, jlong, jstring};
 use jni::JNIEnv;
-use std::sync::OnceLock;
+use std::sync::Mutex;
 
-static RUNTIME: OnceLock<TickLoop> = OnceLock::new();
+static RUNTIME: Mutex<Option<TickLoop>> = Mutex::new(None);
 
-#[unsafe(no_mangle)]
+#[no_mangle]
 pub unsafe extern "system" fn Java_dev_graphite_host_NativeBridge_graphiteInit(
     mut env: JNIEnv,
     _class: JClass,
@@ -22,41 +22,76 @@ pub unsafe extern "system" fn Java_dev_graphite_host_NativeBridge_graphiteInit(
         .into();
 
     let result = std::panic::catch_unwind(|| {
-        let state = unsafe { SharedRegion::from_raw(state_ptr as *mut u8, state_size as usize) };
+        let state_size_usize = state_size as usize;
+        if state_size_usize < graphite_api::protocol::OFFSET_COMMAND_QUEUE + 32 {
+            return Err("state buffer too small".to_string());
+        }
+        let state = unsafe {
+            SharedRegion::try_from_raw(state_ptr as *mut u8, state_size_usize)
+                .map_err(|err| err.to_string())?
+        };
         let event_ring =
-            unsafe { SharedRegion::from_raw(event_ring_ptr as *mut u8, event_ring_size as usize) };
+            unsafe {
+                SharedRegion::try_from_raw(event_ring_ptr as *mut u8, event_ring_size as usize)
+                    .map_err(|err| err.to_string())?
+            };
+        
+        // Do NOT initialize CommandQueue here. Java-side in SharedMemory.initializeCommandQueue()
+        // already initializes head, tail, and capacity. Re-initializing from Rust would cause:
+        // 1. Loss of commands if called during operation
+        // 2. Data race and UB due to concurrent writes to shared memory without proper synchronization
+        // Instead, just verify the queue is accessible (use from_raw_ptr, not from_raw).
+        let cmd_queue_ptr = state.command_queue_ptr_mut();
+        let _ = unsafe { graphite_api::commands::CommandQueue::from_raw_ptr(cmd_queue_ptr) };
+        
         let runtime = TickLoop::new(state, event_ring, std::path::PathBuf::from(mods_dir));
-        assert!(RUNTIME.set(runtime).is_ok(), "graphiteInit called twice");
-        RUNTIME.get().expect("runtime just set").start();
+        let mut guard = RUNTIME.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if guard.is_some() {
+            return Err("graphiteInit already called (or not cleaned up after shutdown)".to_string());
+        }
+        runtime.start();
+        *guard = Some(runtime);
+
+        Ok::<(), String>(())
     });
 
-    if result.is_err() {
-        let _ = env.throw_new("java/lang/RuntimeException", "Graphite panic in graphiteInit");
+    match result {
+        Ok(Ok(())) => {}
+        Ok(Err(err)) => {
+            let _ = env.throw_new("java/lang/RuntimeException", err);
+        }
+        Err(_) => {
+            let _ = env.throw_new("java/lang/RuntimeException", "Graphite panic in graphiteInit");
+        }
     }
 }
 
-#[unsafe(no_mangle)]
+#[no_mangle]
 pub unsafe extern "system" fn Java_dev_graphite_host_NativeBridge_graphiteTick(
     _env: JNIEnv,
     _class: JClass,
     tick_id: jlong,
 ) {
-    if let Some(runtime) = RUNTIME.get() {
+    if let Some(runtime) = RUNTIME.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).as_ref() {
         runtime.signal_tick(tick_id as u64);
     }
 }
 
-#[unsafe(no_mangle)]
+#[no_mangle]
 pub unsafe extern "system" fn Java_dev_graphite_host_NativeBridge_graphiteShutdown(
     _env: JNIEnv,
     _class: JClass,
 ) {
-    if let Some(runtime) = RUNTIME.get() {
+    let runtime = RUNTIME
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .take();
+    if let Some(runtime) = runtime {
         runtime.shutdown();
     }
 }
 
-#[unsafe(no_mangle)]
+#[no_mangle]
 pub unsafe extern "system" fn Java_dev_graphite_host_NativeBridge_graphiteDebugInfo(
     env: JNIEnv,
     _class: JClass,
@@ -66,7 +101,7 @@ pub unsafe extern "system" fn Java_dev_graphite_host_NativeBridge_graphiteDebugI
         env!("CARGO_PKG_VERSION"),
         rustc_version_runtime::version(),
         std::env::consts::OS,
-        RUNTIME.get().map(|runtime| runtime.stats()).unwrap_or_else(|| "not initialized".into())
+        RUNTIME.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).as_ref().map(|runtime| runtime.stats()).unwrap_or_else(|| "not initialized".into())
     );
 
     env.new_string(info)
@@ -74,7 +109,7 @@ pub unsafe extern "system" fn Java_dev_graphite_host_NativeBridge_graphiteDebugI
         .into_raw()
 }
 
-#[unsafe(no_mangle)]
+#[no_mangle]
 pub unsafe extern "system" fn Java_dev_graphite_host_NativeBridge_graphiteReloadMod(
     mut env: JNIEnv,
     _class: JClass,
@@ -86,7 +121,8 @@ pub unsafe extern "system" fn Java_dev_graphite_host_NativeBridge_graphiteReload
         .into();
 
     match RUNTIME
-        .get()
+        .lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+        .as_ref()
         .map(|runtime| runtime.request_reload(std::path::PathBuf::from(path)))
     {
         Some(Ok(())) => 1,
@@ -98,7 +134,7 @@ pub unsafe extern "system" fn Java_dev_graphite_host_NativeBridge_graphiteReload
     }
 }
 
-#[unsafe(no_mangle)]
+#[no_mangle]
 pub unsafe extern "system" fn Java_dev_graphite_host_NativeBridge_graphiteGetDirectBufferAddress(
     env: JNIEnv,
     _class: JClass,

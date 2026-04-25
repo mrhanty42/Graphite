@@ -2,6 +2,7 @@ mod bridge;
 mod mod_loader;
 mod shared_mem;
 mod tick_loop;
+mod utils;
 
 pub use bridge::*;
 

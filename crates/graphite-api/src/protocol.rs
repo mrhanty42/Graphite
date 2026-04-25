@@ -18,7 +18,7 @@ pub const ENTITY_RECORD_SIZE: usize = 48;
 pub const CHUNK_SECTION_RECORD_SIZE: usize = 16400;
 
 pub const MAX_ENTITIES: usize = 4096;
-pub const MAX_CHUNK_SECTIONS: usize = 8;
+pub const MAX_CHUNK_SECTIONS: usize = 24;
 
 pub const CQ_HEAD_OFFSET: usize = 0;
 pub const CQ_TAIL_OFFSET: usize = 4;

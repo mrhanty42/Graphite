@@ -27,19 +27,25 @@ impl GraphiteModImpl for DiagnosticMod {
         let entity_size = unsafe { (*ctx).entity_record_size };
 
         log::info!("[diagnostic] graphite-diagnostic-mod loaded");
-        log::info!("[diagnostic] protocol version: {}", proto_version);
-        log::info!("[diagnostic] entity record size: {} bytes", entity_size);
+        log::info!("[diagnostic] protocol version: {} (expected {})", proto_version, graphite_api::protocol::PROTOCOL_VERSION);
+        log::info!("[diagnostic] entity record size: {} bytes (expected {})", entity_size, graphite_api::protocol::ENTITY_RECORD_SIZE as u32);
 
-        assert_eq!(
-            proto_version,
-            graphite_api::protocol::PROTOCOL_VERSION,
-            "Protocol version mismatch"
-        );
-        assert_eq!(
-            entity_size,
-            graphite_api::protocol::ENTITY_RECORD_SIZE as u32,
-            "EntityRecord size mismatch"
-        );
+        if proto_version != graphite_api::protocol::PROTOCOL_VERSION {
+            log::error!(
+                "[diagnostic] Protocol version mismatch: got {}, expected {}",
+                proto_version,
+                graphite_api::protocol::PROTOCOL_VERSION
+            );
+            return;
+        }
+        if entity_size != graphite_api::protocol::ENTITY_RECORD_SIZE as u32 {
+            log::error!(
+                "[diagnostic] EntityRecord size mismatch: got {}, expected {}",
+                entity_size,
+                graphite_api::protocol::ENTITY_RECORD_SIZE as u32
+            );
+            return;
+        }
 
         log::info!("[diagnostic] all checks passed");
     }

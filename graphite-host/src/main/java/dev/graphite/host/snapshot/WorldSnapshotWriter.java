@@ -28,7 +28,7 @@ public class WorldSnapshotWriter {
     private static final int ENTITY_RECORD_SIZE = 48;
     private static final int CHUNK_SECTION_RECORD_SIZE = 16400;
     private static final int MAX_ENTITIES = 4096;
-    private static final int MAX_CHUNK_SECTIONS = 8;
+    private static final int MAX_CHUNK_SECTIONS = 24;
 
     private static final short FLAG_ALIVE = 1;
     private static final short FLAG_ON_GROUND = 2;
@@ -49,8 +49,10 @@ public class WorldSnapshotWriter {
         int entityCount = writeEntities(level, entityDataStart);
 
         int chunkDataStart = entityDataStart + entityCount * ENTITY_RECORD_SIZE;
-        int chunkCount = writeChunkSections(level, chunkDataStart);
+        int maxChunkSlots = Math.max(0, (SNAPSHOT_LIMIT - chunkDataStart) / CHUNK_SECTION_RECORD_SIZE);
+        int chunkCount = writeChunkSections(level, chunkDataStart, Math.min(MAX_CHUNK_SECTIONS, maxChunkSlots));
 
+        // Write header last so Rust never sees a partially-written snapshot
         stateBuffer.putInt(snapshotBase + SNAP_ENTITY_COUNT, entityCount);
         stateBuffer.putInt(snapshotBase + SNAP_CHUNK_SEC_COUNT, chunkCount);
         stateBuffer.putLong(snapshotBase + SNAP_TIMESTAMP_NS, System.nanoTime());
@@ -58,9 +60,11 @@ public class WorldSnapshotWriter {
         stateBuffer.putInt(snapshotBase + SNAP_FLAGS, 0);
         stateBuffer.putInt(snapshotBase + SNAP_ENTITY_DATA_SIZE, entityCount * ENTITY_RECORD_SIZE);
         stateBuffer.putInt(snapshotBase + SNAP_CHUNK_DATA_SIZE, chunkCount * CHUNK_SECTION_RECORD_SIZE);
+
+        // Release stores ensure Rust sees the snapshot data before the ready flag
         SharedMemory.setIntRelease(stateBuffer, SharedMemory.OFFSET_COMMAND_COUNT, 0);
-        SharedMemory.setIntRelease(stateBuffer, SharedMemory.OFFSET_SNAPSHOT_READY, 1);
         SharedMemory.setLongRelease(stateBuffer, SharedMemory.OFFSET_TICK_COUNTER, tickId);
+        SharedMemory.setIntRelease(stateBuffer, SharedMemory.OFFSET_SNAPSHOT_READY, 1);
     }
 
     private int writeEntities(ServerLevel level, int baseOffset) {
@@ -113,7 +117,7 @@ public class WorldSnapshotWriter {
         return flags;
     }
 
-    private int writeChunkSections(ServerLevel level, int baseOffset) {
+    private int writeChunkSections(ServerLevel level, int baseOffset, int maxSections) {
         int count = 0;
         var chunksToExport = new java.util.LinkedHashSet<Long>();
 
@@ -147,7 +151,7 @@ public class WorldSnapshotWriter {
             int minSectionY = level.getMinSection();
 
             for (int index = 0; index < sections.length; index++) {
-                if (count >= MAX_CHUNK_SECTIONS) {
+                if (count >= maxSections) {
                     break outer;
                 }
 
@@ -157,10 +161,6 @@ public class WorldSnapshotWriter {
                 }
 
                 int off = baseOffset + count * CHUNK_SECTION_RECORD_SIZE;
-                if (off + CHUNK_SECTION_RECORD_SIZE > SNAPSHOT_LIMIT) {
-                    break outer;
-                }
-
                 int sectionY = minSectionY + index;
                 stateBuffer.putInt(off, cx);
                 stateBuffer.putInt(off + 4, sectionY);

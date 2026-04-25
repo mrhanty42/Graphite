@@ -106,7 +106,14 @@ public class GraphiteHost {
                             }
 
                             String file = StringArgumentType.getString(ctx, "file");
-                            Path libPath = MODS_DIR.resolve(file).toAbsolutePath();
+                            Path modsRoot = MODS_DIR.toAbsolutePath().normalize();
+                            Path libPath = MODS_DIR.resolve(file).toAbsolutePath().normalize();
+                            if (!libPath.startsWith(modsRoot)) {
+                                ctx.getSource().sendFailure(Component.literal(
+                                    "[Graphite] Invalid path: file must be inside " + MODS_DIR
+                                ));
+                                return 0;
+                            }
                             boolean accepted = NativeBridge.graphiteReloadMod(libPath.toString());
 
                             if (accepted) {
@@ -120,14 +127,6 @@ public class GraphiteHost {
                             ctx.getSource().sendFailure(Component.literal("[Graphite] Reload request failed"));
                             return 0;
                         })))
-                .then(Commands.literal("mods")
-                    .executes(ctx -> {
-                        String info = runtimeReady
-                            ? NativeBridge.graphiteDebugInfo()
-                            : "Runtime not initialized";
-                        ctx.getSource().sendSuccess(() -> Component.literal("[Graphite] " + info), false);
-                        return Command.SINGLE_SUCCESS;
-                    }))
         );
     }
 
@@ -140,14 +139,14 @@ public class GraphiteHost {
             return;
         }
 
+        // Check if Rust has finished processing the previous snapshot.
+        // Java is the only writer of SNAPSHOT_READY=1, Rust is the only writer of SNAPSHOT_READY=0,
+        // so a simple volatile check is sufficient (no CAS needed).
         if (SharedMemory.getIntVolatile(sharedMem.getStateBuffer(), SharedMemory.OFFSET_SNAPSHOT_READY) != 0) {
-            if (DEBUG_LOGGING) {
-                long previousTick = SharedMemory.getLongVolatile(sharedMem.getStateBuffer(), SharedMemory.OFFSET_TICK_COUNTER);
-                LOG.debug("[Graphite] Skipping snapshot write because Rust is still processing tick {}", previousTick);
-            }
             return;
         }
 
+        // We own the snapshot buffer, safe to write
         tickCounter++;
         snapshotWriter.write(level, tickCounter);
         NativeBridge.graphiteTick(tickCounter);

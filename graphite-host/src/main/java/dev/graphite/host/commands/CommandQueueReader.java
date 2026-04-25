@@ -27,6 +27,8 @@ public class CommandQueueReader {
     private final ByteBuffer stateBuffer;
     private final int cqBase;
     private final BlockPos.MutableBlockPos mutablePos = new BlockPos.MutableBlockPos();
+    private final byte[] scratch4 = new byte[4];
+    private final byte[] scratch8 = new byte[8];
 
     public CommandQueueReader(ByteBuffer stateBuffer) {
         this.stateBuffer = stateBuffer.duplicate().order(ByteOrder.LITTLE_ENDIAN);
@@ -34,8 +36,12 @@ public class CommandQueueReader {
     }
 
     public void drain(ServerLevel level) {
-        int head = SharedMemory.getIntAcquire(stateBuffer, cqBase + CommandType.CQ_HEAD_OFFSET);
-        int tail = SharedMemory.getIntAcquire(stateBuffer, cqBase + CommandType.CQ_TAIL_OFFSET);
+        long head = Integer.toUnsignedLong(
+            SharedMemory.getIntAcquire(stateBuffer, cqBase + CommandType.CQ_HEAD_OFFSET)
+        );
+        long tail = Integer.toUnsignedLong(
+            SharedMemory.getIntAcquire(stateBuffer, cqBase + CommandType.CQ_TAIL_OFFSET)
+        );
 
         if (head == tail) {
             return;
@@ -45,10 +51,27 @@ public class CommandQueueReader {
         int processed = 0;
 
         while (head != tail && processed < MAX_COMMANDS_PER_TICK) {
+            long available = (tail - head) & 0xFFFF_FFFFL;
+            if (available < 2) {
+                LOG.warn("[Graphite] CommandQueue corrupt: less than header bytes available");
+                head = tail;
+                break;
+            }
+
             byte cmdType = readQueueByte(dataBase, head);
             int payloadLen = readQueueByte(dataBase, head + 1) & 0xFF;
-            int payloadOff = head + 2;
+            long payloadOff = head + 2;
             int totalSize = 2 + payloadLen;
+
+            if (((long) totalSize) > available || totalSize > CQ_CAPACITY) {
+                LOG.warn("[Graphite] CommandQueue corrupt: cmd=0x{} len={} available={}",
+                    Integer.toHexString(cmdType & 0xFF),
+                    payloadLen,
+                    available
+                );
+                head = tail;
+                break;
+            }
 
             try {
                 dispatch(level, cmdType, dataBase, payloadOff, payloadLen);
@@ -56,19 +79,18 @@ public class CommandQueueReader {
                 LOG.error(String.format("[Graphite] Command 0x%02X failed", cmdType), e);
             }
 
-            head += totalSize;
+            head = (head + totalSize) & 0xFFFF_FFFFL;
             processed++;
         }
 
         if (processed == MAX_COMMANDS_PER_TICK && head != tail) {
-            LOG.warn("[Graphite] Command limit reached, dropping remaining commands");
-            head = tail;
+            LOG.warn("[Graphite] Command limit reached, deferring remaining commands");
         }
 
-        SharedMemory.setIntRelease(stateBuffer, cqBase + CommandType.CQ_HEAD_OFFSET, head);
+        SharedMemory.setIntRelease(stateBuffer, cqBase + CommandType.CQ_HEAD_OFFSET, (int) (head & 0xFFFF_FFFFL));
     }
 
-    private void dispatch(ServerLevel level, byte type, int dataBase, int off, int len) {
+    private void dispatch(ServerLevel level, byte type, int dataBase, long off, int len) {
         switch (type) {
             case CommandType.SET_BLOCK -> execSetBlock(level, dataBase, off, len);
             case CommandType.SEND_CHAT -> execSendChat(level, dataBase, off, len);
@@ -79,7 +101,7 @@ public class CommandQueueReader {
         }
     }
 
-    private void execSetBlock(ServerLevel level, int base, int off, int len) {
+    private void execSetBlock(ServerLevel level, int base, long off, int len) {
         if (len != 16) {
             LOG.warn("[Graphite] SET_BLOCK invalid payload length={}", len);
             return;
@@ -100,7 +122,7 @@ public class CommandQueueReader {
         level.setBlock(mutablePos, state, Block.UPDATE_ALL);
     }
 
-    private void execSendChat(ServerLevel level, int base, int off, int len) {
+    private void execSendChat(ServerLevel level, int base, long off, int len) {
         if (len < 5) {
             LOG.warn("[Graphite] SEND_CHAT invalid payload length={}", len);
             return;
@@ -113,9 +135,7 @@ public class CommandQueueReader {
             return;
         }
         byte[] msgBytes = new byte[msgLen];
-        for (int index = 0; index < msgLen; index++) {
-            msgBytes[index] = readQueueByte(base, off + 5 + index);
-        }
+        readQueueBytes(base, off + 5, msgBytes, msgLen);
 
         String message = new String(msgBytes, StandardCharsets.UTF_8);
         for (ServerPlayer player : level.players()) {
@@ -125,7 +145,7 @@ public class CommandQueueReader {
         }
     }
 
-    private void execSetVelocity(ServerLevel level, int base, int off, int len) {
+    private void execSetVelocity(ServerLevel level, int base, long off, int len) {
         if (len != 16) {
             LOG.warn("[Graphite] SET_VELOCITY invalid payload length={}", len);
             return;
@@ -139,13 +159,12 @@ public class CommandQueueReader {
         Entity entity = level.getEntity(entityId);
         if (entity != null) {
             entity.setDeltaMovement(new Vec3(vx, vy, vz));
-            if (entity instanceof ServerPlayer player) {
-                player.connection.send(new ClientboundSetEntityMotionPacket(entity));
-            }
+            // Broadcast motion update to all nearby clients
+            level.getChunkSource().broadcastAndSend(entity, new ClientboundSetEntityMotionPacket(entity));
         }
     }
 
-    private void execKillEntity(ServerLevel level, int base, int off, int len) {
+    private void execKillEntity(ServerLevel level, int base, long off, int len) {
         if (len != 4) {
             LOG.warn("[Graphite] KILL_ENTITY invalid payload length={}", len);
             return;
@@ -158,7 +177,7 @@ public class CommandQueueReader {
         }
     }
 
-    private void execSpawnParticle(ServerLevel level, int base, int off, int len) {
+    private void execSpawnParticle(ServerLevel level, int base, long off, int len) {
         if (len != 32) {
             LOG.warn("[Graphite] SPAWN_PARTICLE invalid payload length={}", len);
             return;
@@ -172,32 +191,34 @@ public class CommandQueueReader {
         level.sendParticles(resolveParticle(particleId), x, y, z, (int) count, 0.1, 0.1, 0.1, 0.01);
     }
 
-    private byte readQueueByte(int dataBase, int relativeOff) {
-        return stateBuffer.get(dataBase + Math.floorMod(relativeOff, CQ_CAPACITY));
+    private byte readQueueByte(int dataBase, long relativeOff) {
+        int index = (int) ((relativeOff & 0xFFFF_FFFFL) % CQ_CAPACITY);
+        return stateBuffer.get(dataBase + index);
     }
 
-    private int readQueueI32(int dataBase, int relativeOff) {
-        byte[] bytes = new byte[4];
-        for (int i = 0; i < 4; i++) {
-            bytes[i] = readQueueByte(dataBase, relativeOff + i);
+    private void readQueueBytes(int dataBase, long relativeOff, byte[] dst, int len) {
+        int index = (int) ((relativeOff & 0xFFFF_FFFFL) % CQ_CAPACITY);
+        int firstLen = Math.min(len, CQ_CAPACITY - index);
+        stateBuffer.get(dataBase + index, dst, 0, firstLen);
+        int remaining = len - firstLen;
+        if (remaining > 0) {
+            stateBuffer.get(dataBase, dst, firstLen, remaining);
         }
-        return ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).getInt();
     }
 
-    private float readQueueF32(int dataBase, int relativeOff) {
-        byte[] bytes = new byte[4];
-        for (int i = 0; i < 4; i++) {
-            bytes[i] = readQueueByte(dataBase, relativeOff + i);
-        }
-        return ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).getFloat();
+    private int readQueueI32(int dataBase, long relativeOff) {
+        readQueueBytes(dataBase, relativeOff, scratch4, 4);
+        return ByteBuffer.wrap(scratch4).order(ByteOrder.LITTLE_ENDIAN).getInt();
     }
 
-    private double readQueueF64(int dataBase, int relativeOff) {
-        byte[] bytes = new byte[8];
-        for (int i = 0; i < 8; i++) {
-            bytes[i] = readQueueByte(dataBase, relativeOff + i);
-        }
-        return ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).getDouble();
+    private float readQueueF32(int dataBase, long relativeOff) {
+        readQueueBytes(dataBase, relativeOff, scratch4, 4);
+        return ByteBuffer.wrap(scratch4).order(ByteOrder.LITTLE_ENDIAN).getFloat();
+    }
+
+    private double readQueueF64(int dataBase, long relativeOff) {
+        readQueueBytes(dataBase, relativeOff, scratch8, 8);
+        return ByteBuffer.wrap(scratch8).order(ByteOrder.LITTLE_ENDIAN).getDouble();
     }
 
     private ParticleOptions resolveParticle(int particleId) {

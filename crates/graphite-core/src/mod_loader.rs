@@ -12,9 +12,8 @@ pub struct LoadedMod {
     pub name: String,
     pub version: String,
     path: PathBuf,
-    temp_path: PathBuf,
-    mods_dir_cstr: CString,
     library: Library,
+    temp_path: Option<PathBuf>,
     on_tick_fn: FnOnTick,
 }
 
@@ -22,72 +21,107 @@ impl LoadedMod {
     fn load(path: &Path, mods_dir: &Path, load_gen: u64) -> Result<Self, String> {
         let ext = std::env::consts::DLL_EXTENSION;
         cleanup_stale_temp_copies(path)?;
-        let temp_name = format!(
-            "{}_v{}.{}",
-            path.file_stem()
-                .and_then(|stem| stem.to_str())
-                .unwrap_or("graphite_mod"),
-            load_gen,
-            ext
-        );
         let temp_root = std::env::temp_dir().join("graphite_mods");
         std::fs::create_dir_all(&temp_root)
             .map_err(|err| format!("failed to create temp dir: {err}"))?;
-        let temp_path = temp_root.join(temp_name);
+
+        // Use NamedTempFile for automatic cleanup if panic occurs before library loading
+        let temp_file = tempfile::Builder::new()
+            .prefix(&format!("{}_v{}_", path.file_stem()
+                .and_then(|stem| stem.to_str())
+                .unwrap_or("graphite_mod"), load_gen))
+            .suffix(&format!(".{ext}"))
+            .tempfile_in(&temp_root)
+            .map_err(|err| format!("failed to create temp file: {err}"))?;
+
+        let temp_path = temp_file.path().to_path_buf();
+
         std::fs::copy(path, &temp_path)
             .map_err(|err| format!("failed to copy {}: {err}", path.display()))?;
 
-        let library = unsafe {
-            Library::new(&temp_path)
-                .map_err(|err| format!("failed to load {}: {err}", temp_path.display()))?
-        };
+        // Prevent NamedTempFile from deleting the file on drop - we need it for libloading.
+        // into_temp_path() + immediate drop would delete the file before Library::new can load it.
+        // std::mem::forget leaks the File handle inside NamedTempFile but prevents file deletion;
+        // cleanup is handled manually in LoadedMod::Drop.
+        std::mem::forget(temp_file);
 
-        let on_tick_fn: FnOnTick = unsafe {
-            let symbol: Symbol<'_, FnOnTick> = library
-                .get(b"graphite_mod_on_tick\0")
-                .map_err(|_| format!("{} missing graphite_mod_on_tick", path.display()))?;
-            *symbol
-        };
+        let temp_path_cleanup = temp_path.clone();
+        let result: Result<Self, String> = (|| {
+            let (library, loaded_from_temp) = match unsafe { Library::new(&temp_path) } {
+                Ok(lib) => (lib, true),
+                Err(temp_err) => {
+                    log::warn!(
+                        "[Graphite/Loader] temp copy load failed ({}): {temp_err}; falling back to original path",
+                        temp_path.display()
+                    );
+                    let lib = unsafe {
+                        Library::new(path).map_err(|err| {
+                            format!(
+                                "failed to load {}: {err} (after temp load failure: {temp_err})",
+                                path.display()
+                            )
+                        })?
+                    };
+                    (lib, false)
+                }
+            };
 
-        let name = unsafe {
-            let symbol: Symbol<'_, FnModName> = library
-                .get(b"graphite_mod_name\0")
-                .map_err(|_| format!("{} missing graphite_mod_name", path.display()))?;
-            CStr::from_ptr(symbol()).to_string_lossy().into_owned()
-        };
+            let on_tick_fn: FnOnTick = unsafe {
+                let symbol: Symbol<'_, FnOnTick> = library
+                    .get(b"graphite_mod_on_tick\0")
+                    .map_err(|_| format!("{} missing graphite_mod_on_tick", path.display()))?;
+                *symbol
+            };
 
-        let version = unsafe {
-            let symbol: Symbol<'_, FnModVersion> = library
-                .get(b"graphite_mod_version\0")
-                .map_err(|_| format!("{} missing graphite_mod_version", path.display()))?;
-            CStr::from_ptr(symbol()).to_string_lossy().into_owned()
-        };
+            let name = unsafe {
+                let symbol: Symbol<'_, FnModName> = library
+                    .get(b"graphite_mod_name\0")
+                    .map_err(|_| format!("{} missing graphite_mod_name", path.display()))?;
+                CStr::from_ptr(symbol()).to_string_lossy().into_owned()
+            };
 
-        let mods_dir_cstr = CString::new(mods_dir.to_string_lossy().as_bytes())
-            .map_err(|err| format!("invalid mods dir string: {err}"))?;
-        let ctx = ModLoadContext {
-            mods_dir: mods_dir_cstr.as_ptr(),
-            protocol_version: PROTOCOL_VERSION,
-            entity_record_size: ENTITY_RECORD_SIZE as u32,
-            reserved: [0_u64; 4],
-        };
+            let version = unsafe {
+                let symbol: Symbol<'_, FnModVersion> = library
+                    .get(b"graphite_mod_version\0")
+                    .map_err(|_| format!("{} missing graphite_mod_version", path.display()))?;
+                CStr::from_ptr(symbol()).to_string_lossy().into_owned()
+            };
 
-        unsafe {
-            let symbol: Symbol<'_, FnOnLoad> = library
-                .get(b"graphite_mod_on_load\0")
-                .map_err(|_| format!("{} missing graphite_mod_on_load", path.display()))?;
-            symbol(&ctx as *const ModLoadContext);
+            let mods_dir_cstr = CString::new(mods_dir.to_string_lossy().as_bytes())
+                .map_err(|err| format!("invalid mods dir string: {err}"))?;
+            let ctx = ModLoadContext {
+                mods_dir: mods_dir_cstr.as_ptr(),
+                protocol_version: PROTOCOL_VERSION,
+                entity_record_size: ENTITY_RECORD_SIZE as u32,
+                reserved: [0_u64; 4],
+            };
+            unsafe {
+                let symbol: Symbol<'_, FnOnLoad> = library
+                    .get(b"graphite_mod_on_load\0")
+                    .map_err(|_| format!("{} missing graphite_mod_on_load", path.display()))?;
+                let result = std::panic::catch_unwind(|| {
+                    symbol(&ctx as *const ModLoadContext);
+                });
+                if result.is_err() {
+                    return Err(format!("{} panicked in on_load", path.display()));
+                }
+            }
+
+            Ok(Self {
+                name,
+                version,
+                path: path.to_path_buf(),
+                temp_path: loaded_from_temp.then_some(temp_path),
+                library,
+                on_tick_fn,
+            })
+        })();
+
+        if result.is_err() {
+            let _ = std::fs::remove_file(&temp_path_cleanup);
         }
 
-        Ok(Self {
-            name,
-            version,
-            path: path.to_path_buf(),
-            temp_path,
-            mods_dir_cstr,
-            library,
-            on_tick_fn,
-        })
+        result
     }
 
     #[inline(always)]
@@ -106,8 +140,16 @@ impl LoadedMod {
 
 impl Drop for LoadedMod {
     fn drop(&mut self) {
-        let _ = self.mods_dir_cstr.as_c_str();
-        let _ = std::fs::remove_file(&self.temp_path);
+        self.call_on_unload();
+        if let Some(temp_path) = &self.temp_path {
+            if let Err(err) = std::fs::remove_file(temp_path) {
+                log::warn!(
+                    "[Graphite] failed to remove temp file '{}': {}",
+                    temp_path.display(),
+                    err
+                );
+            }
+        }
         log::info!("[Graphite] unloaded mod '{}'", self.name);
     }
 }
@@ -145,7 +187,7 @@ impl ModLoader {
         for entry in entries.flatten() {
             let path = entry.path();
             log::info!("[Graphite/Loader] found {}", path.display());
-            if !has_dynlib_extension(&path) {
+            if !crate::utils::has_dynlib_extension(&path) {
                 log::debug!(
                     "[Graphite/Loader] skipping {} due to extension mismatch",
                     path.display()
@@ -170,7 +212,6 @@ impl ModLoader {
 
     pub fn reload(&mut self, path: &Path) -> Result<(), String> {
         if let Some(index) = self.mods.iter().position(|module| module.path == path) {
-            self.mods[index].call_on_unload();
             self.mods.remove(index);
         }
 
@@ -201,20 +242,6 @@ impl ModLoader {
     }
 }
 
-impl Drop for ModLoader {
-    fn drop(&mut self) {
-        for module in &self.mods {
-            module.call_on_unload();
-        }
-    }
-}
-
-fn has_dynlib_extension(path: &Path) -> bool {
-    path.extension()
-        .and_then(|ext| ext.to_str())
-        .map(|ext| ext.eq_ignore_ascii_case(std::env::consts::DLL_EXTENSION))
-        .unwrap_or(false)
-}
 
 fn cleanup_stale_temp_copies(path: &Path) -> Result<(), String> {
     let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {

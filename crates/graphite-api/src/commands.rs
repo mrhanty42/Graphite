@@ -9,25 +9,21 @@ pub struct CommandQueue {
 unsafe impl Send for CommandQueue {}
 
 impl CommandQueue {
-    pub unsafe fn from_raw(base: *mut u8) -> Self {
-        unsafe {
-            base.add(CQ_HEAD_OFFSET).cast::<u32>().write(0);
-            base.add(CQ_TAIL_OFFSET).cast::<u32>().write(0);
-            base.add(CQ_CAPACITY_OFFSET)
-                .cast::<u32>()
-                .write(CQ_CAPACITY as u32);
-        }
-        Self {
-            base,
-            capacity: CQ_CAPACITY,
-        }
-    }
-
     pub fn reset(&self) {
         self.head_atomic().store(0, Ordering::Release);
         self.tail_atomic().store(0, Ordering::Release);
     }
 
+    /// Creates a CommandQueue reference from a raw pointer without initialization.
+    ///
+    /// This method assumes that the queue has already been initialized via `from_raw()`.
+    /// It does not reinitialize head, tail, or capacity fields.
+    ///
+    /// # Safety
+    ///
+    /// - `ptr` must point to a valid CommandQueue region previously initialized with `from_raw()`
+    /// - `ptr` must be properly aligned (8-byte)
+    /// - The queue must have been initialized before calling this method
     pub unsafe fn from_raw_ptr(ptr: *mut u8) -> Self {
         Self {
             base: ptr,
@@ -85,14 +81,23 @@ impl CommandQueue {
     }
 
     fn push(&mut self, cmd_type: u8, payload: &[u8]) -> bool {
-        assert!(payload.len() <= 254, "payload too large: {}", payload.len());
+        if payload.len() > 254 {
+            return false;
+        }
 
-        let total = 2 + payload.len();
-        let tail = self.tail_atomic().load(Ordering::Relaxed) as usize;
-        let head = self.head_atomic().load(Ordering::Acquire) as usize;
-        let used = tail.saturating_sub(head);
+        let total = 2_u32.wrapping_add(payload.len() as u32);
+        let tail_u32 = self.tail_atomic().load(Ordering::Relaxed);
+        let head_u32 = self.head_atomic().load(Ordering::Acquire);
+        // Use wrapping_sub to handle u32 overflow correctly.
+        // head and tail are monotonically increasing and wrap around u32.
+        // When tail overflows before head, tail < head, and wrapping_sub correctly
+        // computes the actual used space in the circular buffer.
+        // saturating_sub would incorrectly return 0, allowing new data to overwrite
+        // unprocessed commands.
+        let used = tail_u32.wrapping_sub(head_u32) as usize;
 
-        if used + total >= self.capacity {
+        let tail_usize = tail_u32 as usize;
+        if used + total as usize >= self.capacity {
             log::warn!(
                 "[Graphite] CommandQueue full, dropping command {:02x}",
                 cmd_type
@@ -102,17 +107,17 @@ impl CommandQueue {
 
         let data_base = unsafe { self.base.add(CQ_DATA_OFFSET) };
         unsafe {
-            *data_base.add(tail % self.capacity) = cmd_type;
-            *data_base.add((tail + 1) % self.capacity) = payload.len() as u8;
+            *data_base.add(tail_usize % self.capacity) = cmd_type;
+            *data_base.add((tail_usize.wrapping_add(1)) % self.capacity) = payload.len() as u8;
         }
         for (index, byte) in payload.iter().copied().enumerate() {
             unsafe {
-                *data_base.add((tail + 2 + index) % self.capacity) = byte;
+                *data_base.add((tail_usize.wrapping_add(2 + index)) % self.capacity) = byte;
             }
         }
 
         self.tail_atomic()
-            .store((tail + total) as u32, Ordering::Release);
+            .store(tail_u32.wrapping_add(total), Ordering::Release);
         true
     }
 
@@ -122,5 +127,74 @@ impl CommandQueue {
 
     fn tail_atomic(&self) -> &AtomicU32 {
         unsafe { &*self.base.add(CQ_TAIL_OFFSET).cast::<AtomicU32>() }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn alloc_queue_mem() -> Vec<u8> {
+        let mut mem = vec![0_u8; CQ_DATA_OFFSET + CQ_CAPACITY + 64];
+        let base = mem.as_mut_ptr();
+        unsafe {
+            base.add(CQ_HEAD_OFFSET).cast::<u32>().write(0);
+            base.add(CQ_TAIL_OFFSET).cast::<u32>().write(0);
+            base.add(CQ_CAPACITY_OFFSET)
+                .cast::<u32>()
+                .write(CQ_CAPACITY as u32);
+        }
+        mem
+    }
+
+    #[test]
+    fn push_rejects_oversized_payload_without_panicking() {
+        let mut mem = alloc_queue_mem();
+        let mut q = unsafe { CommandQueue::from_raw_ptr(mem.as_mut_ptr()) };
+
+        let payload = vec![0_u8; 255];
+        assert!(!q.push(0xAA, &payload));
+        assert_eq!(q.tail_atomic().load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn push_writes_header_and_advances_tail() {
+        let mut mem = alloc_queue_mem();
+        let mut q = unsafe { CommandQueue::from_raw_ptr(mem.as_mut_ptr()) };
+
+        let payload = [1_u8, 2, 3, 4];
+        assert!(q.push(0x10, &payload));
+
+        let data_base = CQ_DATA_OFFSET;
+        assert_eq!(mem[data_base], 0x10);
+        assert_eq!(mem[data_base + 1], payload.len() as u8);
+        assert_eq!(&mem[data_base + 2..data_base + 6], &payload);
+        assert_eq!(
+            q.tail_atomic().load(Ordering::Acquire),
+            (2 + payload.len()) as u32
+        );
+    }
+
+    #[test]
+    fn wraparound_payload_does_not_overflow() {
+        let mut mem = alloc_queue_mem();
+        let mut q = unsafe { CommandQueue::from_raw_ptr(mem.as_mut_ptr()) };
+
+        // Set head close to tail so there is enough free space for the payload.
+        // tail = CQ_CAPACITY - 1, head = CQ_CAPACITY - 10 → used = 9, free = plenty.
+        q.head_atomic()
+            .store((CQ_CAPACITY - 10) as u32, Ordering::Release);
+        q.tail_atomic()
+            .store((CQ_CAPACITY - 1) as u32, Ordering::Release);
+
+        let payload = [9_u8; 3];
+        assert!(q.push(0x22, &payload));
+
+        let data_base = CQ_DATA_OFFSET;
+        assert_eq!(mem[data_base + (CQ_CAPACITY - 1)], 0x22);
+        assert_eq!(mem[data_base + 0], payload.len() as u8);
+        assert_eq!(mem[data_base + 1], 9);
+        assert_eq!(mem[data_base + 2], 9);
+        assert_eq!(mem[data_base + 3], 9);
     }
 }
